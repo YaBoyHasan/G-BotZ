@@ -1,5 +1,7 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading.Tasks;
@@ -46,7 +48,6 @@ namespace G_BotZ.Proxy
                 var clientStream = client.GetStream();
                 var serverStream = server.GetStream();
 
-                // Forward in both directions, keep session alive until either closes
                 await Task.WhenAll(
                     ForwardDataAsync(clientStream, serverStream, PacketDirection.Out),
                     ForwardDataAsync(serverStream, clientStream, PacketDirection.In)
@@ -75,10 +76,8 @@ namespace G_BotZ.Proxy
                     int bytesRead = await fromStream.ReadAsync(tempBuffer, 0, tempBuffer.Length);
                     if (bytesRead == 0) break;
 
-                    // Add newly read bytes to buffer
                     buffer.AddRange(new ArraySegment<byte>(tempBuffer, 0, bytesRead));
 
-                    // Process all full packets in buffer
                     while (buffer.Count >= 4)
                     {
                         if (RC4Active)
@@ -88,7 +87,7 @@ namespace G_BotZ.Proxy
 
                             if (buffer.Count >= 6)
                             {
-                                var trialBuf = buffer.GetRange(0, Math.Min(buffer.Count, 512)).ToArray(); // Try max 512 bytes
+                                var trialBuf = buffer.Take(Math.Min(buffer.Count, 512)).ToArray();
                                 var result = BruteforceRC4(hex, trialBuf);
 
                                 if (result.HasValue)
@@ -99,74 +98,69 @@ namespace G_BotZ.Proxy
                                     {
                                         byte[] cleanPacket = decrypted.Take(len + 4).ToArray();
                                         Console.WriteLine($"✅ Decrypted Packet: {BitConverter.ToString(cleanPacket)}");
+
+                                        var reader = new PacketReader(cleanPacket);
+                                        int packetLength = reader.ReadLength();
+                                        short header = reader.ReadHeader();
+                                        Console.WriteLine($"{direction} [Header: {header}] Length: {packetLength}");
+
+                                        await toStream.WriteAsync(buffer.Take(len + 4).ToArray());
+                                        buffer.RemoveRange(0, len + 4);
+                                        continue;
                                     }
                                 }
-                                else
-                                    Console.WriteLine("Failed to bruteforce rc4");
-
+                                else Console.WriteLine("❌ Failed to bruteforce RC4.");
                             }
 
-                            Console.ReadLine();
-                        }
-
-                        // Read packet length (first 4 bytes, big-endian)
-                        int length = IPAddress.NetworkToHostOrder(BitConverter.ToInt32(buffer.ToArray(), 0));
-                        int fullPacketLength = length + 4;
-
-                        if (buffer.Count < fullPacketLength)
-                        {
-                            // Not enough data for full packet yet, wait for more bytes
                             break;
                         }
-
-                        // Extract full packet bytes
-                        var packetData = buffer.GetRange(0, fullPacketLength).ToArray();
-
-                        // Remove packet bytes from buffer
-                        buffer.RemoveRange(0, fullPacketLength);
-
-                        // Parse and log packet here
-                        var reader = new PacketReader(packetData);
-                        int packetLength = reader.ReadLength();
-                        short header = reader.ReadHeader();
-
-                        Console.WriteLine($"{direction} [Header: {header}] Length: {packetLength}");
-
-                        if (header == 4000 && direction == PacketDirection.Out)
+                        else
                         {
-                            string rel = reader.ReadString();
-                            string type = reader.ReadString();
-                            int major = reader.ReadInt();
-                            int minor = reader.ReadInt();
-                            Console.WriteLine($"ClientHello -> {rel} {type} {major} {minor}");
-                        }
-                        else if(header == 3968 && direction == PacketDirection.Out)
-                        {
-                            Console.WriteLine($"InitDiffieHandshake");
-                        }
-                        else if(header == 325 && direction == PacketDirection.In) // read incoming dh
-                        {
-                            string dhp = reader.ReadString();
-                            string dhg = reader.ReadString();
-                            Console.WriteLine($"P: {dhp}");
-                            Console.WriteLine($"G: {dhg}");
-                        }
-                        else if(header == 482 && direction == PacketDirection.Out)
-                        {
-                            string s = reader.ReadString();
-                            Console.WriteLine($"S:{s}");
-                        }
-                        else if (header == 3578 && direction == PacketDirection.In)
-                        {
-                            string text = reader.ReadString();
-                            bool switchToRC4 = reader.ReadBool();
-                            Console.WriteLine($"DH: {text}");
-                            Console.WriteLine($"Bool: {switchToRC4}");
-                            RC4Active = !switchToRC4;
-                        }
+                            int length = IPAddress.NetworkToHostOrder(BitConverter.ToInt32(buffer.ToArray(), 0));
+                            int fullPacketLength = length + 4;
+                            if (buffer.Count < fullPacketLength) break;
 
-                        // Forward full original packet bytes (length + header + payload)
-                        await toStream.WriteAsync(packetData, 0, packetData.Length);
+                            var packetData = buffer.GetRange(0, fullPacketLength).ToArray();
+                            buffer.RemoveRange(0, fullPacketLength);
+
+                            var reader = new PacketReader(packetData);
+                            int packetLength = reader.ReadLength();
+                            short header = reader.ReadHeader();
+                            Console.WriteLine($"{direction} [Header: {header}] Length: {packetLength}");
+
+                            if (header == 4000 && direction == PacketDirection.Out)
+                            {
+                                string rel = reader.ReadString();
+                                string type = reader.ReadString();
+                                int major = reader.ReadInt();
+                                int minor = reader.ReadInt();
+                                Console.WriteLine($"ClientHello -> {rel} {type} {major} {minor}");
+                            }
+                            else if (header == 3968 && direction == PacketDirection.Out)
+                            {
+                                Console.WriteLine($"InitDiffieHandshake");
+                            }
+                            else if (header == 325 && direction == PacketDirection.In)
+                            {
+                                string dhp = reader.ReadString();
+                                string dhg = reader.ReadString();
+                                Console.WriteLine($"P: {dhp}\nG: {dhg}");
+                            }
+                            else if (header == 482 && direction == PacketDirection.Out)
+                            {
+                                string s = reader.ReadString();
+                                Console.WriteLine($"S:{s}");
+                            }
+                            else if (header == 3578 && direction == PacketDirection.In)
+                            {
+                                string text = reader.ReadString();
+                                bool switchToRC4 = reader.ReadBool();
+                                Console.WriteLine($"DH: {text}\nBool: {switchToRC4}");
+                                RC4Active = !switchToRC4;
+                            }
+
+                            await toStream.WriteAsync(packetData, 0, packetData.Length);
+                        }
                     }
                 }
             }
@@ -179,9 +173,7 @@ namespace G_BotZ.Proxy
 
     public enum PacketDirection
     {
-        In,  // Server -> Client
-        Out  // Client -> Server
+        In,
+        Out
     }
-
-    
 }

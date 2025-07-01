@@ -69,34 +69,36 @@ namespace G_BotZ.Helpers
             {
                 for (int jTry = 0; jTry < 256; jTry++)
                 {
-                    byte[] S = (byte[])sBox.Clone();
-                    int i = iTry, j = jTry;
-                    byte[] keystream = new byte[encrypted.Length];
-                    for (int k = 0; k < encrypted.Length; k++)
-                    {
-                        i = (i + 1) & 0xFF;
-                        j = (j + S[i]) & 0xFF;
-                        (S[i], S[j]) = (S[j], S[i]);
-                        keystream[k] = S[(S[i] + S[j]) & 0xFF];
-                    }
+                    // Clone S-box
+                    int[] table = new int[256];
+                    for (int x = 0; x < 256; x++)
+                        table[x] = sBox[x];
 
-                    byte[] decrypted = encrypted.Zip(keystream, (e, k) => (byte)(e ^ k)).ToArray();
+                    // Setup state
+                    var rc4 = new RC4Dummy(table, iTry, jTry); // See below for RC4Dummy
 
-                    // check length field
+                    // Copy encrypted buffer
+                    byte[] decrypted = (byte[])encrypted.Clone();
+
+                    // Peek-parse without mutating state
+                    rc4.RefParse(decrypted, 0, decrypted.Length, isPeeking: true);
+
                     if (decrypted.Length < 6) continue;
-                    int len = (decrypted[0] << 24) | (decrypted[1] << 16) | (decrypted[2] << 8) | decrypted[3];
-                    if (len > 4096 || len <= 0) continue;
 
-                    short header = (short)((decrypted[4] << 8) | decrypted[5]);
-                    if (header >= 1000 && header < 6000)
+                    int len = (decrypted[0] << 24) | (decrypted[1] << 16) | (decrypted[2] << 8) | decrypted[3];
+                    if (len <= 0 || len > 4096) continue;
+
+                    ushort header = (ushort)((decrypted[4] << 8) | decrypted[5]);
+                    if (header >= 1 && header <= 5000)
                     {
-                        byte[] decryptedClean = decrypted.Take(len + 4).ToArray();
-                        return (iTry, jTry, decryptedClean);
+                        // Return decrypted chunk
+                        byte[] clean = decrypted.Take(len + 4).ToArray();
+                        return (iTry, jTry, clean);
                     }
                 }
             }
 
-            Console.WriteLine("❌ Failed to bruteforce RC4.");
+            Console.WriteLine("❌ RC4 Bruteforce Failed.");
             return null;
         }
 

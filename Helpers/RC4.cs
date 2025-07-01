@@ -89,4 +89,15 @@
             _table[b] = temp;
         }
     }
+
+    public class RC4Dummy : RC4
+    {
+        public RC4Dummy(int[] table, int i, int j) : base(Array.Empty<byte>())
+        {
+            typeof(RC4).GetField("_table", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)?.SetValue(this, table);
+            typeof(RC4).GetField("_i", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)?.SetValue(this, i);
+            typeof(RC4).GetField("_j", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)?.SetValue(this, j);
+        }
+    }
+
 }
